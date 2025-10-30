@@ -1,0 +1,10 @@
+#Dependencies
+__pycache__
+*.pyc
+.env
+.venv
+
+
+
+# ChromaDB
+chroma_db
