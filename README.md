@@ -79,7 +79,7 @@ The application code (main.py) is already set up to read these keys using  `load
 ### 5. Hotel Database Setup (ChromaDB)
 This project relies on a CSV file of Indian hotel data to build its vector database downloaded from the dataset: https://www.kaggle.com/datasets/aakashshinde1507/hotels-in-indiaDownload ,  the hotel_details.csv file.
 
-First Run (Database Ingestion):The first time you run the app, the hotel_agent will:
+First Run (Database Ingestion):The first time you run the app, the hotel_agent will:<br>
 a. Read hotel_details.csv. <br>
 b. Process and clean the 9,000+ entries. <br>
 c. Ingest them into a new ChromaDB database in batches. <br>
