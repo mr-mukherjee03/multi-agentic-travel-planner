@@ -91,4 +91,4 @@ This initial process will be slow (it may take 1-2 minutes). Every subsequent ru
 Once all the steps above are complete, run the Streamlit app from your terminal:
 `streamlit run main.py`
 
-
+![AI Travel Planner ](./app/travel_planner.png)
