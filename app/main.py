@@ -1,207 +1,460 @@
 import streamlit as st
-from hotel_agent import HotelRecommenderAgent
-from weather_agent import WeatherAnalysisAgent
-from itinerary_agent import ItineraryPlannerAgent
 import pandas as pd
-import numpy as np
 import os
-import pydeck as pdk
-from geopy.geocoders import Nominatim
-from geopy.extra.rate_limiter import RateLimiter
+import asyncio
+import httpx
+import json
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
+from logging import getLogger
 
+logger = getLogger(__name__)
+
+
+from agents.hotel_agent import HotelRecommenderAgent
+from agents.weather_agent import WeatherAnalysisAgent
+from agents.itinerary_agent import ItineraryPlannerAgent
+
+# SETUP & CONFIGURATION 
 load_dotenv()
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
+#API KEY & AGENT INITIALIZATION ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
+MAP_ID = os.getenv("MAP_ID")
 
-historical_weather_data = [
-    {'month': i, 'latitude': 41.9028, 'longitude': 12.4964, 'weather_score': np.random.rand()} for i in range(1, 13)
-]
-
-gemini_api_key = os.getenv("GEMINI_API_KEY")
-if not gemini_api_key:
-    st.error("GEMINI_API_KEY not found. Please set it in your .env file.")
+if not GEMINI_API_KEY or not GOOGLE_MAPS_API_KEY:
+    st.error("Missing API Keys. Please set GEMINI_API_KEY and GOOGLE_MAPS_API_KEY in your .env or Streamlit secrets.")
     st.stop()
 
+try:
+    hotel_agent = HotelRecommenderAgent()
+    weather_agent = WeatherAnalysisAgent()
+    itinerary_agent = ItineraryPlannerAgent(gemini_api_key=GEMINI_API_KEY)
+    
+except Exception as e:
+    st.error(f"Error initializing agents: {e}")
+    st.stop()
 
-weather_agent = WeatherAnalysisAgent()
-hotel_agent = HotelRecommenderAgent() 
-itinerary_agent = ItineraryPlannerAgent(api_key=gemini_api_key)
+#HELPER FUNCTIONS ---
 
-
-weather_agent.train(historical_weather_data)
-
-
-
-
-@st.cache_data(ttl=3600)
-def get_coordinates(place_name):
+@st.cache_data(ttl=3600) 
+def get_google_geocode(address):
     """
-    Gets lat/lon for a place name using Nominatim and caches the result.
+    Synchronously geocodes an address. This function IS cacheable.
     """
+    logger.info(f"Geocoding (Sync): {address}")
+    url = f"https://maps.googleapis.com/maps/api/geocode/json?address={address}&key={GOOGLE_MAPS_API_KEY}"
     try:
-        geolocator = Nominatim(user_agent="ai_travel_planner_v1", timeout=10)
-        
-        geocode = RateLimiter(geolocator.geocode, min_delay_seconds=1)
-        
-        print(f"Geocoding: '{place_name}'") 
-        location = geocode(place_name)
-        
-        if location:
-            print("...Success!") 
-            return location.latitude, location.longitude
-        else:
-            print("...Failed to geocode.") 
-            return None, None
-            
+        response = httpx.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if data['status'] == 'OK':
+            location = data['results'][0]['geometry']['location']
+            return {"lat": location['lat'], "lng": location['lng']}
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Geocoding HTTP Error: {e}")
     except Exception as e:
-        print(f"Geocoding error for {place_name}: {e}")
-        return None, None
+        logger.error(f"Geocoding Error: {e}")
+    return None
+
+def get_google_directions(waypoints_list):
+    """
+    Synchronously gets a route polyline.
+    """
+    logger.info("Fetching route (Sync)...")
+    
+    if len(waypoints_list) < 2:
+        return None
+    origin = f"{waypoints_list[0]['lat']},{waypoints_list[0]['lng']}"
+    destination = f"{waypoints_list[-1]['lat']},{waypoints_list[-1]['lng']}"
+    intermediate_waypoints = []
+    if len(waypoints_list) > 2:
+        for wp in waypoints_list[1:-1]:
+            intermediate_waypoints.append(f"{wp['lat']},{wp['lng']}")
+    url = f"https://maps.googleapis.com/maps/api/directions/json?origin={origin}&destination={destination}&waypoints=optimize:true|{'|'.join(intermediate_waypoints)}&key={GOOGLE_MAPS_API_KEY}"
+    try:
+        response = httpx.get(url, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if data['status'] == 'OK' and data['routes']:
+            return data['routes'][0]['overview_polyline']['points']
+        else:
+            logger.warning("Directions API returned OK but no routes found.")
+            return None
+    except Exception as e:
+        logger.error(f"Directions API Error: {e}")
+    return None
 
 def get_day_color(day):
-    """Assigns a unique color to each day."""
-    colors = [
-        [255, 0, 0],    # Day 1 (Red)
-        [0, 0, 255],    # Day 2 (Blue)
-        [0, 255, 0],    # Day 3 (Green)
-        [255, 255, 0],  # Day 4 (Yellow)
-        [0, 255, 255],  # Day 5 (Cyan)
-        [255, 0, 255],  # Day 6 (Magenta)
-        [255, 165, 0],  # Day 7 (Orange)
-        [128, 0, 128],  # Day 8 (Purple)
-        [0, 128, 0],    # Day 9 (Dark Green)
-        [255, 192, 203] # Day 10 (Pink)
-    ]
-
+    """
+    Assigns a unique color to each day.
+    """
+    colors = ["#FF0000", "#0000FF", "#008000", "#FFFF00", "#00FFFF", "#FF00FF", "#FFA500"]
     return colors[(day - 1) % len(colors)]
 
+#GOOGLE MAPS HTML/JS COMPONENT ---
+def create_google_map_html(api_key, center_lat, center_lng, markers, route_polylines):
+    """
+    Generates the HTML/JS for the Google Map component.
+    """
+    marker_data = json.dumps(markers)
+    polylines_data = json.dumps(route_polylines)
+    
 
-#Streamlit UI
-st.title("AI Travel Planner ✈️")
-st.write("Create a personalized travel plan for any city in India!")
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Google Map</title>
+        <style>
+            #map {{ height: 500px; width: 100%; }}
+        </style>
+    </head>
+    <body>
+        <div id="map"></div>
+        <script>
+            let map;
+            const markersData = {marker_data};
+            const polylinesData = {polylines_data};
 
-#user inputs
-destination = st.text_input("Enter your destination (e.g., Mumbai):", "Mumbai")
-preferences = st.text_area("Describe your ideal hotel:", "A luxury hotel in Mumbai with a spa and city views.")
-duration = st.slider("Trip duration (days):", 1, 10, 4) 
+            async function initMap() {{
+                const {{ Map }} = await google.maps.importLibrary("maps");
+                const {{ AdvancedMarkerView, PinElement }} = await google.maps.importLibrary("marker");
+                
+                map = new Map(document.getElementById("map"), {{
+                    center: {{ lat: {center_lat}, lng: {center_lng} }},
+                    zoom: 12,
+                    mapId: "{MAP_ID}",
+                    tilt: 45 
+                }});
 
-if st.button("Generate Travel Plan ✨"):
-    with st.spinner("Generating your personalized travel plan... This may take a moment."):
+                markersData.forEach(marker => {{
+                    const markerPin = new PinElement({{
+                        background: marker.color,
+                        borderColor: "#000",
+                        glyphColor: "#000",
+                    }});
+                    const advMarker = new AdvancedMarkerView({{
+                        map: map,
+                        position: {{ lat: marker.lat, lng: marker.lng }},
+                        title: `Day ${{marker.day}}: ${{marker.name}}`,
+                        content: markerPin.element,
+                    }});
+                }});
+
+                polylinesData.forEach(route => {{
+                    if (route.polyline) {{
+                        const decodedPath = google.maps.geometry.encoding.decodePath(route.polyline);
+                        const routeLine = new google.maps.Polyline({{
+                            path: decodedPath,
+                            geodesic: true,
+                            strokeColor: route.color,
+                            strokeOpacity: 0.8,
+                            strokeWeight: 5,
+                        }});
+                        routeLine.setMap(map);
+                    }}
+                }});
+            }}
+        </script>
+        <script async
+            src="https://maps.googleapis.com/maps/api/js?key={api_key}&v=beta&libraries=maps,marker,geometry&callback=initMap">
+        </script>
+    </body>
+    </html>
+    """
+
+# CUSTOM WEATHER WIDGET FUNCTIONS 
+
+# WMO Weather interpretation codes
+WEATHER_CODES = {
+    0: ("☀️", "Clear sky"),
+    1: ("🌤️", "Mainly clear"),
+    2: ("🌥️", "Partly cloudy"),
+    3: ("☁️", "Overcast"),
+    45: ("🌫️", "Fog"),
+    48: ("🌫️", "Depositing rime fog"),
+    51: ("🌧️", "Light drizzle"),
+    53: ("🌧️", "Moderate drizzle"),
+    55: ("🌧️", "Dense drizzle"),
+    56: ("🌧️", "Light freezing drizzle"),
+    57: ("🌧️", "Dense freezing drizzle"),
+    61: ("🌧️", "Slight rain"),
+    63: ("🌧️", "Moderate rain"),
+    65: ("🌧️", "Heavy rain"),
+    66: ("🌧️", "Light freezing rain"),
+    67: ("🌧️", "Heavy freezing rain"),
+    71: ("❄️", "Slight snow fall"),
+    73: ("❄️", "Moderate snow fall"),
+    75: ("❄️", "Heavy snow fall"),
+    77: ("❄️", "Snow grains"),
+    80: ("🌧️", "Slight rain showers"),
+    81: ("🌧️", "Moderate rain showers"),
+    82: ("🌧️", "Violent rain showers"),
+    85: ("❄️", "Slight snow showers"),
+    86: ("❄️", "Heavy snow showers"),
+    95: ("⛈️", "Thunderstorm"),
+    96: ("⛈️", "Thunderstorm (hail)"),
+    99: ("⛈️", "Thunderstorm (hail)"),
+}
+
+def get_weather_display(weather_code):
+    """
+    Maps Open-Meteo weather codes to an icon and a caption.
+    """
+    return WEATHER_CODES.get(weather_code, ("☁️", "Cloudy"))
+
+def create_weather_widget_html(df):
+    """
+    Generates custom HTML/CSS for the weather forecast.
+    """
+    if df.empty:
+        return "<p>Could not retrieve weather forecast.</p>"
+
+    html = """
+    <style>
+        .weather-widget-container {
+            display: flex;
+            flex-direction: row;
+            overflow-x: auto;
+            background-color: #f0f2f6;
+            border-radius: 10px;
+            padding: 10px;
+            -webkit-overflow-scrolling: touch; /* Smooth scrolling on mobile */
+        }
+        .weather-day-card {
+            min-width: 120px;
+            background: #ffffff;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            padding: 15px;
+            margin-right: 10px;
+            text-align: center;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        }
+        .weather-day {
+            font-size: 1.1em;
+            font-weight: bold;
+            color: #333;
+        }
+        .weather-icon {
+            font-size: 2.5em;
+            margin: 5px 0;
+        }
+        .weather-desc { /* <-- NEW HUMAN CAPTION */
+            font-size: 0.9em;
+            color: #666;
+            height: 2.5em; /* Reserve space for 2 lines */
+            line-height: 1.2em;
+        }
+        .weather-temp-high {
+            font-size: 1.2em;
+            font-weight: bold;
+            color: #111;
+            margin-top: 5px;
+        }
+        .weather-temp-low {
+            font-size: 1em;
+            color: #555;
+        }
+        .weather-precip {
+            font-size: 0.9em;
+            color: #007bff;
+            margin-top: 8px;
+        }
+    </style>
+    <div class="weather-widget-container">
+    """
+
+    # Loop through the DataFrame rows
+    for index, row in df.iterrows():
+        day_name = index.strftime('%a') # e.g., "Mon"
+        icon, description = get_weather_display(row['Weather Code'])
+        temp_max = row['Temp Max (°C)']
+        temp_min = row['Temp Min (°C)']
+        precip = row['Precip. (mm)']
+        
+        html += f"""
+        <div class="weather-day-card">
+            <div class="weather-day">{day_name}</div>
+            <div class="weather-icon">{icon}</div>
+            <div class="weather-desc">{description}</div>
+            <div class="weather-temp-high">{temp_max:.0f}°</div>
+            <div class="weather-temp-low">{temp_min:.0f}°</div>
+            <div class="weather-precip">🌧️ {precip:.1f} mm</div>
+        </div>
+        """
+    
+    html += "</div>"
+    return html
+
+# MAIN ASYNC ORCHESTRATOR 
+async def main_task(destination, preferences, duration, start_date):
+    """
+    Runs all async tasks in parallel.
+    """
+    async with httpx.AsyncClient() as client:
         
         
-        weather_results = weather_agent.predict_best_time({'latitude': 41.9028, 'longitude': 12.4964})
-        best_months_list = weather_results.get('best_months', [])
-        best_month = best_months_list[0]['month'] if best_months_list else 1
+        st_geocode.write(f"...Analyzing destination: {destination}...")
+        dest_loc = await asyncio.to_thread(get_google_geocode, destination)
         
-        recommended_hotels = hotel_agent.find_hotels(preferences, destination, top_k=3)
+        if dest_loc is None:
+            st.error(f"Could not find coordinates for {destination}. Please check spelling or Google API key permissions.")
+            return
+
+        dest_lat, dest_lon = dest_loc['lat'], dest_loc['lng']
+        st_geocode.success(f"Location found: ({dest_lat:.4f}, {dest_lon:.4f})")
+        
+        st_parallel.write("...Running tasks in parallel...")
+        
+        st.write("...Finding best hotel...")
+        recommended_hotels = await hotel_agent.find_hotels(preferences, destination, top_k=3)
         
         if not recommended_hotels:
-            st.error("Could not find a matching hotel. Please broaden your preferences.")
-            st.stop()
-            
-      
-        top_hotel = recommended_hotels[0]
-
-     
-        response_data = itinerary_agent.create_itinerary(destination, best_month, top_hotel, duration)
-        itinerary_text = response_data.get("itinerary_text", "Failed to generate itinerary.")
-        locations = response_data.get("locations", [])
-
-        st.subheader("📆 Best Months to Visit")
-        st.caption(f"(Note: Weather data is currently static for this demo)")
-        for m in best_months_list:
-            st.write(f"Month {m['month']}: Score {m['score']:.2f}")
-            
-        st.subheader("🏨 Recommended Hotels ( from real Indian database! )")
-        for hotel in recommended_hotels:
-            
-            st.write(f"**{hotel['name']}** (Rating: {hotel.get('rating', 'N/A')})")
-            st.caption(f"{hotel['description']} - *{hotel['address']}*")
-
-        st.subheader(f"📜 Your {duration}-Day Itinerary")
-        st.markdown(itinerary_text)
-        
-      
-        st.subheader("🗺 Itinerary Map")
-        
-        map_locations = []
-        if locations:
-            progress_bar = st.progress(0, text="Geocoding locations...")
-            for i, loc in enumerate(locations):
-                # Geocode each location name from the itinerary
-                lat, lon = get_coordinates(loc['name'])
-                if lat and lon:
-                    loc['lat'] = lat
-                    loc['lon'] = lon
-                    loc['day_label'] = f"Day {loc['day']}"
-                    loc['color'] = get_day_color(loc['day'])
-                    map_locations.append(loc)
-                progress_bar.progress((i + 1) / len(locations))
-            progress_bar.empty()
-
-        if map_locations:
-            df = pd.DataFrame(map_locations)
-            
-            try:
-                MAPTILER_KEY = os.getenv("MAPTILER_API_KEY")
-            except KeyError:
-                st.error("MAPTILER_API_KEY not found. Please add it to .streamlit/secrets.toml")
-                st.stop()
-
-            map_styles = {
-                "Streets": f"https://api.maptiler.com/maps/streets-v2/style.json?key={MAPTILER_KEY}",
-                "Satellite": f"https://api.maptiler.com/maps/satellite/style.json?key={MAPTILER_KEY}",
-                "Basic (Light)": f"https://api.maptiler.com/maps/basic-v2/style.json?key={MAPTILER_KEY}",
-                "Basic (Dark)": f"https://api.maptiler.com/maps/basic-v2-dark/style.json?key={MAPTILER_KEY}",
-                "Outdoor": f"https://api.maptiler.com/maps/outdoor-v2/style.json?key={MAPTILER_KEY}",
-            }
-            
-            selected_style_name = st.selectbox("Select Map Style:", options=list(map_styles.keys()))
-
-
-            view_state = pdk.ViewState(
-                latitude=df['lat'].mean(),
-                longitude=df['lon'].mean(),
-                zoom=12,
-                pitch=50,
-            )
-            
-            scatterplot_layer = pdk.Layer(
-                "ScatterplotLayer",
-                data=df,
-                get_position=["lon", "lat"],
-                get_fill_color="color",
-                get_radius=100,
-                pickable=True,
-            )
-
-           
-            text_layer = pdk.Layer(
-                "TextLayer",
-                data=df,
-                get_position=["lon", "lat"],
-                get_text="day_label",
-                get_color=[0, 0, 0, 200],  # Default Black text
-                get_size=16,
-                get_alignment_baseline="'bottom'",
-            )
-            
-
-            if selected_style_name in ["Basic (Dark)", "Satellite"]:
-                text_layer.get_color = [255, 255, 255, 200] # White text
-
-            # Tooltip
-            tooltip = {
-                "html": "<b>{day_label}: {name}</b><br/>{description}",
-                "style": {"backgroundColor": "steelblue", "color": "white"}
-            }
-
-            # Create and render the deck
-            st.pydeck_chart(pdk.Deck(
-                map_style=map_styles[selected_style_name], # Use the selected MapTiler style
-                initial_view_state=view_state,
-                layers=[scatterplot_layer, text_layer],
-                tooltip=tooltip,
-            ))
+            st.warning("No matching hotels found in your destination. Using a generic hotel.")
+            top_hotel = { "name": f"Hotel in {destination}" }
         else:
-            st.warning("Could not geocode locations for the map. The itinerary may be too vague.")
+            top_hotel = recommended_hotels[0]
+
+        
+        tasks = {
+            "weather": asyncio.create_task(
+                weather_agent.get_daily_forecast(client, dest_lat, dest_lon, start_date, duration)
+            ),
+            "itinerary": asyncio.create_task(
+                itinerary_agent.create_itinerary(client, destination, top_hotel, duration)
+            )
+        }
+        await asyncio.gather(*tasks.values())
+        st_parallel.success("...All tasks complete!")
+
+        
+        weather_df = tasks['weather'].result()
+        itinerary_data = tasks['itinerary'].result()
+        itinerary_text = itinerary_data.get("itinerary_text", "Error")
+        locations = itinerary_data.get("locations", [])
+        
+       
+        st_geocode_locs.write("...Geocoding itinerary locations...")
+        map_markers = []
+        if locations:
+            day_groups = {}
+            for loc in locations:
+                day = loc.get('day', 1)
+                if day not in day_groups: day_groups[day] = []
+                day_groups[day].append(loc)
+
+            geocode_tasks = []
+            for day, locs in day_groups.items():
+                for loc in locs:
+                    geocode_tasks.append(
+                        (day, loc['name'], asyncio.to_thread(get_google_geocode, loc['name']))
+                    )
+            geocode_results = await asyncio.gather(*[task for day, name, task in geocode_tasks])
+            
+            for i, (lat_lng) in enumerate(geocode_results):
+                if lat_lng:
+                    day, name = geocode_tasks[i][0], geocode_tasks[i][1]
+                    map_markers.append({
+                        "lat": lat_lng['lat'], "lng": lat_lng['lng'],
+                        "name": name, "day": day, "color": get_day_color(day)
+                    })
+        st_geocode_locs.success(f"...Found {len(map_markers)} locations!")
+
+        
+        route_polylines = []
+        if map_markers:
+            day_routes = pd.DataFrame(map_markers).groupby('day')
+            route_tasks = []
+            for day, group in day_routes:
+                day_waypoints = group[['lat', 'lng']].to_dict('records')
+                route_tasks.append(
+                    (day, asyncio.to_thread(get_google_directions, day_waypoints))
+                )
+            route_results = await asyncio.gather(*[task for day, task in route_tasks])
+
+            for i, polyline in enumerate(route_results):
+                if polyline:
+                    day = route_tasks[i][0]
+                    route_polylines.append({
+                        "day": day, "polyline": polyline, "color": get_day_color(day)
+                    })
+
+        return {
+            "weather_df": weather_df,
+            "recommended_hotels": recommended_hotels,
+            "itinerary_text": itinerary_text,
+            "map_markers": map_markers,
+            "center_lat": dest_lat,
+            "center_lon": dest_lon,
+            "route_polylines": route_polylines
+        }
+
+
+st.set_page_config(layout="wide")
+st.title("Async AI Travel Planner ✈️")
+st.write("Plan your trip using live Google data.")
+
+destination = st.text_input("Enter your destination (e.g., Mumbai):", "Mumbai")
+preferences = st.text_area("Describe your ideal hotel:", "A luxury hotel with a spa.")
+
+today = datetime.now().date()
+start_date_obj = st.date_input(
+    "Select your trip start date",
+    value=today,
+    min_value=today,
+    max_value=today + timedelta(days=90) 
+)
+start_date_str = start_date_obj.strftime("%Y-%m-%d") 
+duration = st.slider("Trip duration (days):", 1, 10, 4)
+
+if st.button("Generate Travel Plan ✨"):
+    
+    st_geocode = st.empty()
+    st_parallel = st.empty()
+    st_geocode_locs = st.empty()
+
+    try:
+        results = asyncio.run(main_task(destination, preferences, duration, start_date_str))
+        
+        if results:
+            col1, col2 = st.columns([1, 1])
+
+            with col1:
+                st.subheader("🏨 Recommended Hotels")
+                if not results['recommended_hotels']:
+                    st.warning("No matching hotels found in your destination.")
+                for hotel in results['recommended_hotels']:
+                    st.write(f"**{hotel['name']}** (Rating: {hotel.get('rating', 'N/A')})")
+                    st.caption(f"{hotel['description']} - *{hotel['address']}*")
+
+                
+                st.subheader(f"Weather Forecast for {destination.title()}")
+                weather_html = create_weather_widget_html(results['weather_df'])
+                st.components.v1.html(weather_html, height=280)
+                
+
+                st.subheader(f"📜 Your {duration}-Day Itinerary")
+                st.markdown(results['itinerary_text'])
+                
+                st.subheader("Behind the Scenes: Project Architecture")
+                st.image("travel_planner.png",caption="The architecture of the AI Travel Planner", use_container_width=True)
+
+            with col2:
+                st.subheader("🗺 Itinerary Map")
+                
+                map_html = create_google_map_html(
+                    GOOGLE_MAPS_API_KEY,
+                    results['center_lat'],
+                    results['center_lon'],
+                    results['map_markers'],
+                    results['route_polylines']
+                )
+                st.components.v1.html(map_html, height=500)
+
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
+        #st.code(traceback.format_exc())

@@ -4,11 +4,12 @@ This is an intelligent travel planning application built with Streamlit and a mu
 
 ## Features
 
-* **AI-Powered Itinerary:** Generates detailed, day-by-day travel plans using the Google Gemini API.
-* **RAG-Powered Hotel Recommendations:** Uses a persistent ChromaDB vector database to perform semantic search on a real dataset of 8,000+ Indian hotels.
+* **AI-Powered Itinerary:** Generates detailed, day-by-day travel plans using the `Google Gemini API`.
+* **RAG-Powered Hotel Recommendations:** Uses a persistent ChromaDB vector database to perform semantic search on a real dataset of 9,000+ Indian hotels.
 * **Dynamic Filtering:** Recommends hotels based on both user preferences (e.g., "luxury with a spa") and the chosen destination city.
-* **Interactive 3D Map:** Geocodes all itinerary locations and displays them as colorful, daily waypoints on a `pydeck` map.
-* **Custom Map Styles:** Includes a theme switcher for MapTiler (Streets, Satellite, Dark, etc.) powered by a `MapTiler` API key.
+* **Async-First:** Uses asyncio and httpx to run all major network calls (Geocoding, Hotel Search, Itinerary Generation, Weather) in parallel for a fast user experience.
+* **Live Weather Forecast:** Fetches a 7-day forecast from `Open-Meteo` and displays it in a custom, clean HTML/CSS widget.
+* **Interactive 3D Map:** Uses the `Google Maps Platform` to render 3D map tiles, custom-colored markers for each day, and route polylines connecting the waypoints.
 
 ## Architecture
 
@@ -16,7 +17,7 @@ This project is built on a multi-agent architecture where different components h
 
 * **Frontend:** `streamlit` is used for the user interface and interactivity.
 
-* **Generative AI:** `google-genai` (Gemini Pro) is used by the `ItineraryPlannerAgent` to generate structured JSON-based itineraries. This agent's generation is "grounded" by the context provided from the retrieval agents.
+* **Generative AI:** `google-genai` (Gemini 2.5 Pro) is used by the `ItineraryPlannerAgent` to generate structured JSON-based itineraries. This agent's generation is "grounded" by the context provided from the retrieval agents.
 
 * **Retrieval (RAG):**
     * `hotel_agent.py`: The primary RAG agent. It uses `sentence-transformers` to find semantically relevant hotels for a user's query.
@@ -25,8 +26,7 @@ This project is built on a multi-agent architecture where different components h
 * **Data & Geocoding:**
     * `hotel_details.csv`: The raw data source of Indian hotels.
     * `geopy`: Used to geocode location names from the itinerary into coordinates. This process is parallelized using `concurrent.futures.ThreadPoolExecutor` for speed.
-    * `pydeck`: Renders the interactive 3D map in Streamlit.
-    * `MapTiler`: Provides the map basemap tiles.
+    * `Google Maps`: Provides the map basemap tiles.
 
 ## Getting Started
 
@@ -34,7 +34,8 @@ This project is built on a multi-agent architecture where different components h
 
 * Python 3.9+
 * A Google Gemini API Key
-* A MapTiler API Key 
+* A Google Maps API Key & a map ID
+
 
 ### 2. Installation
 
@@ -61,8 +62,6 @@ pandas
 numpy
 python-dotenv
 google-genai
-pydeck
-geopy
 sentence-transformers
 chromadb
 ```
@@ -71,7 +70,8 @@ chromadb
 Create a file named `.env`. Inside this file, the following API Keys must be present. <br>
 ```
 GEMINI_API_KEY="your-google-gemini-api-key"
-MAPTILER_API_KEY="your-maptiler-api-key"
+GOOGLE_MAP_API_KEY="your-google-maps-api-key"
+MAP_ID = "your-created-google-map-id"
 ```
 The application code (main.py) is already set up to read these keys using  `load_env()` from `python-dotenv`.
 
