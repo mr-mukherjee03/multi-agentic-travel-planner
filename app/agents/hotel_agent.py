@@ -4,15 +4,20 @@ import streamlit as st
 import os
 import asyncio 
 import chromadb.utils.embedding_functions as embedding_functions
+from pathlib import Path
 from logging import getLogger
 
 EMBEDDING_MODEL = 'all-MiniLM-L6-v2'
 COLLECTION_NAME = "indian_hotels"
 
+SCRIPT_DIR = Path(__file__).parent
+
+FILE_PATH = SCRIPT_DIR.parent / "data" / "hotel_details.csv"
+
 logger = getLogger(__name__)
 
 class HotelRecommenderAgent:
-    def __init__(self, database_path='../data/hotel_details.csv', db_directory='./chroma_db'):
+    def __init__(self, database_path=FILE_PATH, db_directory='./chroma_db'):
         
         self.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
             model_name=EMBEDDING_MODEL
