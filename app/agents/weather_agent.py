@@ -33,7 +33,7 @@ class WeatherAnalysisAgent:
                 "temperature_2m_min", 
                 "precipitation_sum", 
                 "wind_speed_10m_max",
-                "weather_code"  # <-- ADDED THIS
+                "weather_code"  
             ],
             "timezone": "auto",
             "start_date": start_date,

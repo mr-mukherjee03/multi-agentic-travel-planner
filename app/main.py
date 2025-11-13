@@ -21,12 +21,9 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 #API KEY & AGENT INITIALIZATION ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
 MAP_ID = os.getenv("MAP_ID")
-
-if not GEMINI_API_KEY or not GOOGLE_MAPS_API_KEY:
-    st.error("Missing API Keys. Please set GEMINI_API_KEY and GOOGLE_MAPS_API_KEY in your .env or Streamlit secrets.")
-    st.stop()
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
+GEOCODE_MAPS_CO_API_KEY = os.getenv("GEOCODE_MAPS_CO_API_KEY")
 
 try:
     hotel_agent = HotelRecommenderAgent()
@@ -40,21 +37,37 @@ except Exception as e:
 #HELPER FUNCTIONS ---
 
 @st.cache_data(ttl=3600) 
-def get_google_geocode(address):
+def get_geocode(address):
     """
-    Synchronously geocodes an address. This function IS cacheable.
+    Synchronously geocodes an address using geocode.maps.co. This function IS cacheable.
     """
-    logger.info(f"Geocoding (Sync): {address}")
-    url = f"https://maps.googleapis.com/maps/api/geocode/json?address={address}&key={GOOGLE_MAPS_API_KEY}"
+    logger.info(f"Geocoding (Sync) with geocode.maps.co: {address}")
+    
+    if not GEOCODE_MAPS_CO_API_KEY:
+        logger.error("Missing GEOCODE_MAPS_CO_API_KEY.")
+        return None
+
+    
+    url = f"https://geocode.maps.co/search?q={address}&api_key={GEOCODE_MAPS_CO_API_KEY}"
+    
     try:
         response = httpx.get(url, timeout=10)
-        response.raise_for_status()
+        response.raise_for_status() 
         data = response.json()
-        if data['status'] == 'OK':
-            location = data['results'][0]['geometry']['location']
-            return {"lat": location['lat'], "lng": location['lng']}
+        
+        
+        if data and isinstance(data, list) and len(data) > 0:
+            location = data[0]
+            
+            return {"lat": float(location['lat']), "lng": float(location['lon'])}
+        else:
+            logger.warning(f"Geocoding returned no results for: {address}")
+            return None
+            
     except httpx.HTTPStatusError as e:
         logger.error(f"Geocoding HTTP Error: {e}")
+    except (json.JSONDecodeError, KeyError, IndexError, TypeError) as e:
+        logger.error(f"Geocoding Parse Error: {e}")
     except Exception as e:
         logger.error(f"Geocoding Error: {e}")
     return None
@@ -299,7 +312,7 @@ async def main_task(destination, preferences, duration, start_date):
         
         
         st_geocode.write(f"...Analyzing destination: {destination}...")
-        dest_loc = await asyncio.to_thread(get_google_geocode, destination)
+        dest_loc = await asyncio.to_thread(get_geocode, destination)
         
         if dest_loc is None:
             st.error(f"Could not find coordinates for {destination}. Please check spelling or Google API key permissions.")
@@ -351,7 +364,7 @@ async def main_task(destination, preferences, duration, start_date):
             for day, locs in day_groups.items():
                 for loc in locs:
                     geocode_tasks.append(
-                        (day, loc['name'], asyncio.to_thread(get_google_geocode, loc['name']))
+                        (day, loc['name'], asyncio.to_thread(get_geocode, loc['name']))
                     )
             geocode_results = await asyncio.gather(*[task for day, name, task in geocode_tasks])
             

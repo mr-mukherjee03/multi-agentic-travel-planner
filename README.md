@@ -71,6 +71,7 @@ Create a file named `.env`. Inside this file, the following API Keys must be pre
 ```
 GEMINI_API_KEY="your-google-gemini-api-key"
 GOOGLE_MAP_API_KEY="your-google-maps-api-key"
+GEOCODE_MAPS_CO_API_KEY ="your-geoencoding-api-key"
 MAP_ID = "your-created-google-map-id"
 ```
 The application code (main.py) is already set up to read these keys using  `load_env()` from `python-dotenv`.
