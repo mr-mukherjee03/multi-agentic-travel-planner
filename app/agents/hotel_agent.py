@@ -12,7 +12,7 @@ COLLECTION_NAME = "indian_hotels"
 logger = getLogger(__name__)
 
 class HotelRecommenderAgent:
-    def __init__(self, database_path='hotel_details.csv', db_directory='./chroma_db'):
+    def __init__(self, database_path='data/hotel_details.csv', db_directory='./chroma_db'):
         
         self.embedding_function = embedding_functions.SentenceTransformerEmbeddingFunction(
             model_name=EMBEDDING_MODEL
